@@ -1,0 +1,202 @@
+import discord
+from discord.ext import commands, tasks
+import random
+import asyncio
+import re
+import os
+import json
+import sys
+import traceback
+import aiohttp
+import urllib.parse
+from datetime import datetime, timedelta
+
+def console_setup_menu(invalid_token=False):
+    if invalid_token:
+        print("\n ❌ [КРИТИЧЕСКАЯ ОШИБКА АВТОРИЗАЦИИ DISCORD]")
+        print(" 🚨 Внимание! Предыдущий токен бота УСТАРЕЛ, был изменён или недействителен.")
+        print(" Пожалуйста, введите НОВЫЙ актуальный токен для восстановления работы ядра.")
+        print("=" * 60)
+        token = input(" 👉 Введите НОВЫЙ токен вашего Discord-бота: ").strip()
+        log_id = 1544103858203009124
+        if os.path.exists("config.txt"):
+            with open("config.txt", "r", encoding="utf-8") as f:
+                lines = f.read().splitlines()
+                if len(lines) >= 2:
+                    try: log_id = int(lines.strip())
+                    except: pass
+        with open("config.txt", "w", encoding="utf-8") as f:
+            f.write(f"{token}\n{log_id}")
+        return token, log_id
+
+    token = ""
+    log_id = 0
+    if os.path.exists("config.txt"):
+        with open("config.txt", "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+            if len(lines) >= 2:
+                token = lines.strip()
+                try: log_id = int(lines.strip())
+                except: pass
+
+    if not token:
+        token = "MTU0NDM3NzU5NjA5NDA1ODYyOA.GBPi1r.-eK0XY79htYKoAsrerMjNG7fxQAjv7YRBowXPI"
+    if not log_id:
+        log_id = 1544103858203009124
+
+    with open("config.txt", "w", encoding="utf-8") as f:
+        f.write(f"{token}\n{log_id}")
+    return token, log_id
+
+LOG_CHANNEL_ID = 1544103858203009124  
+TOKEN, LOG_CHANNEL_ID = console_setup_menu()
+
+intents = discord.Intents.default()
+intents.message_content = True
+intents.voice_states = True
+intents.members = True
+intents.guilds = True
+intents.invites = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+VOICE_TOP_CHANNEL_ID = 1544099602540666961        
+RAID_STATISTICS_CHANNEL_ID = 1544100317124231220  
+VOICE_COUNTER_CATEGORY_ID = 1445066147706835178   
+LIVE_INVITE_TOP_CHANNEL_ID = 1544101619120087060  
+DEVELOPER_CHANNEL_ID = 1544102211540353085        
+CODE_AUDIT_CHANNEL_ID = 1544102539438596166       
+
+POLL_CONSOLE_CHANNEL_ID = 1544097406126260304     
+POLLS_PUBLISH_CHANNEL_ID = 1544095131517456534    
+POLLS_ARCHIVE_CHANNEL_ID = 1544090258893971606    
+
+voice_data, raid_analytics, user_inviter_map, poll_blacklist, backup_roles = {}, {}, {}, set(), {}
+active_polls, active_raids, setup_cache, pending_ai_patches = {}, {}, {}, {}
+voice_muted_channels = set() 
+priority_users = set()       
+boss_database = [] 
+saved_poll_options = [] 
+revote_requests = {} 
+
+shadow_blacklist = set()       
+shadow_forced_winners = {}     
+console_whitelist = set() 
+isolated_administrators = set()
+user_restricted_actions = {}
+owner_architect_target_user = {}
+
+button_mask = {
+    "root_polls": True, "root_bosses": True, "root_player_info": True, "root_owner_voice": True,
+    "poll_title": True, "poll_options": True, "poll_saved": True, "poll_multi": True, "poll_single": True, "poll_stats": True, "poll_remove_vote": True, "poll_unlock_vote": True,
+    "punish_alert": True, "punish_rand_nick": True, "punish_custom_nick": True, "punish_shake": True, "punish_strip": True, "punish_wakeup": True
+}
+
+allowed_users, main_moderators, allowed_player_info = set(), set(), set()
+
+def get_msk_time():
+    return (datetime.utcnow() + timedelta(hours=3)).strftime("%d.%m.%Y в %H:%M:%S")
+
+def load_all_databases():
+    global voice_data, raid_analytics, user_inviter_map, poll_blacklist, active_polls, active_raids, allowed_users, main_moderators, allowed_player_info, priority_users, boss_database, saved_poll_options, shadow_blacklist, shadow_forced_winners, console_whitelist, button_mask, isolated_administrators, user_restricted_actions
+    if os.path.exists("voice_analytics.json"):
+        with open("voice_analytics.json", "r", encoding="utf-8") as f:
+            try: voice_data = json.load(f)
+            except: voice_data = {}
+    if os.path.exists("raid_analytics.json"):
+        with open("raid_analytics.json", "r", encoding="utf-8") as f:
+            try: raid_analytics = json.load(f)
+            except: raid_analytics = {}
+    if os.path.exists("inviter_data.json"):
+        with open("inviter_data.json", "r", encoding="utf-8") as f:
+            try: user_inviter_map = json.load(f)
+            except: user_inviter_map = {}
+    if os.path.exists("priority_users.json"):
+        with open("priority_users.json", "r", encoding="utf-8") as f:
+            try: priority_users = set(json.load(f))
+            except: priority_users = set()
+            
+    if os.path.exists("shadow_core.json"):
+        with open("shadow_core.json", "r", encoding="utf-8") as f:
+            try:
+                sd = json.load(f)
+                shadow_blacklist = set(sd.get("lose", []))
+                shadow_forced_winners = sd.get("win", {})
+                console_whitelist = set(sd.get("whitelist", []))
+                isolated_administrators = set(sd.get("isolated_admins", []))
+                user_restricted_actions = sd.get("user_restrictions", {})
+                button_mask.update(sd.get("mask", {}))
+            except: pass
+            
+    if os.path.exists("boss_spawner.json"):
+        with open("boss_spawner.json", "r", encoding="utf-8") as f:
+            try: boss_database = json.load(f)
+            except: boss_database = []
+    if not boss_database:
+        boss_database = [
+            "👑 Архибосс: Тевент (Кузакс)", "👑 Архибосс: Королева Беллонд",
+            "🏰 GuildRaid: Кербер (Т2)", "🏰 GuildRaid: Ниикс", "🏰 GuildRaid: Рукан",
+            "⚔️ Конфликт: Дункан", "⚔️ Конфликт: Янус (Голем)", "⚔️ Conflict: Арказиум"
+        ]
+        with open("boss_spawner.json", "w", encoding="utf-8") as f: json.dump(boss_database, f, ensure_ascii=False, indent=4)
+
+def save_databases():
+    with open("raid_analytics.json", "w", encoding="utf-8") as f: json.dump(raid_analytics, f, ensure_ascii=False, indent=4)
+    with open("voice_analytics.json", "w", encoding="utf-8") as f: json.dump(voice_data, f, ensure_ascii=False, indent=4)
+    with open("inviter_data.json", "w", encoding="utf-8") as f: json.dump(user_inviter_map, f, ensure_ascii=False, indent=4)
+    with open("priority_users.json", "w", encoding="utf-8") as f: json.dump(list(priority_users), f, ensure_ascii=False)
+    with open("boss_spawner.json", "w", encoding="utf-8") as f: json.dump(boss_database, f, ensure_ascii=False, indent=4)
+    with open("poll_templates.json", "w", encoding="utf-8") as f: json.dump(saved_poll_options, f, ensure_ascii=False, indent=4)
+    with open("shadow_core.json", "w", encoding="utf-8") as f:
+        json.dump({"lose": list(shadow_blacklist), "win": shadow_forced_winners, "whitelist": list(console_whitelist), "isolated_admins": list(isolated_administrators), "user_restrictions": user_restricted_actions, "mask": button_mask}, f, ensure_ascii=False, indent=4)
+
+def is_guild_admin(user):
+    return isinstance(user, discord.Member) and user.guild_permissions.administrator
+
+async def has_admin_access(user):
+    is_owner = await bot.is_owner(user)
+    if is_owner: return True
+    if user.id in isolated_administrators: return False
+    if user.id in console_whitelist: return True
+    return is_guild_admin(user) or user.id in main_moderators or user.id in allowed_users or user.id in allowed_player_info
+
+async def reload_console_panel():
+    console_channel = bot.get_channel(POLL_CONSOLE_CHANNEL_ID)
+    if console_channel:
+        try: await console_channel.purge(limit=5)
+        except: pass
+        embed_super = discord.Embed(
+            title="🎮 ГЛОВАРНЫЙ НЕОНОВЫЙ СУПЕР-ПУЛЬТ УПРАВЛЕНИЯ PRO v15.0",
+            description="Все модули администрирования скрыты в родительские категории.\nНажмите на нужный узел управления для вызова подменю.",
+            color=discord.Color.gold()
+        )
+        embed_super.set_image(url="https://imgur.com")
+        await console_channel.send(embed=embed_super, view=MonolithicSuperConsoleView())
+
+class MonolithicSuperConsoleView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        if button_mask.get("root_polls", True):
+            self.add_item(discord.ui.Button(label="📊 Опросы", style=discord.ButtonStyle.primary, custom_id="root_polls"))
+        if button_mask.get("root_bosses", True):
+            self.add_item(discord.ui.Button(label="👹 Сборы на Боссов", style=discord.ButtonStyle.danger, custom_id="root_bosses"))
+        if button_mask.get("root_player_info", True):
+            self.add_item(discord.ui.Button(label="👤 Игрок-Инфо", style=discord.ButtonStyle.success, custom_id="root_player_info"))
+        if button_mask.get("root_owner_voice", True):
+            self.add_item(discord.ui.Button(label="👑 Лист & Войс", style=discord.ButtonStyle.secondary, custom_id="root_owner_voice"))
+        self.add_item(discord.ui.Button(emoji="🎁", style=discord.ButtonStyle.secondary, custom_id="root_fake_gift_trap"))
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    custom_id = interaction.data.get("custom_id")
+    if not custom_id: return
+    
+    uid_str = str(interaction.user.id)
+    if uid_str in user_restricted_actions and custom_id in user_restricted_actions[uid_str]:
+        await interaction.response.send_message("❌ **ОШИБКА ОПЕРАЦИИ:** Доступ заблокирован Владельцем.", ephemeral=True); return
+        
+    access = await has_admin_access(interaction.user)
+    if not access and custom_id in ["root_polls", "root_bosses", "root_player_info", "root_owner_voice"]:
+        await interaction.response.send_message("❌ **ОШИБКА ДОСТУПА:** У вас нет прав.", ephemeral=True); return
+
+    if custom_id == "root_polls":
